@@ -6,7 +6,7 @@ on:
       - "**/*.md"
       - '**/*.txt'
     branches:
-      - '**'
+      - master
   pull_request:
     paths-ignore:
       - "**/*.md"
@@ -14,7 +14,7 @@ on:
   workflow_dispatch:
     inputs:
       release:
-        description: "Create a release"
+        description: "Create an official fork release (master only)"
         type: choice
         required: false
         default: 'false'
@@ -34,23 +34,26 @@ on:
 env:
   VERINC: ${{ github.event.inputs.version_increment || 'patch' }}
 
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
-
+# Build jobs only read repository contents; publishing grants write access separately.
 permissions:
-  contents: write
-  id-token: write      # GitHub Actions OIDC token for fusionfix.io (no secret involved)
+  contents: read
 
 jobs:
   build:
     runs-on: windows-2025-vs2026
+    timeout-minutes: 30
+    outputs:
+      version: ${{ steps.versioning.outputs.version }}
+    concurrency:
+      group: ${{ github.workflow }}-build-${{ github.event_name }}-${{ github.ref }}
+      cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
 
     steps:
     - name: Checkout Repository
       uses: actions/checkout@v7
       with:
         submodules: recursive
+        persist-credentials: false
 
     - name: Add msbuild to PATH
       uses: microsoft/setup-msbuild@main
@@ -81,59 +84,8 @@ jobs:
         tag: "Win32-latest"
         fileName: "dinput8-Win32.zip"
 
-    # FusionFixHub.exe ships with the fix (game root): the latest signed release of the private repository
-    # ThirteenAG/FusionFixHub-App, read with the read-only secret HUB_RELEASE_TOKEN (readme, "Release packages and
-    # secrets"). The vendor runtimes and DXVK are never packaged: the hub downloads them. A release run fails without
-    # the hub; a push or pull request without the secret (forks) builds the package without it, with a warning.
-    - name: Download FusionFixHub
-      shell: pwsh
-      env:
-        GH_TOKEN: ${{ secrets.HUB_RELEASE_TOKEN }}
-        RELEASE: ${{ github.event.inputs.release }}
-        # SHA-256 of the signing certificate's SubjectPublicKeyInfo (CN=FusionFix): the key the hub pins for its own updates
-        HUB_SIGNER_SPKI_SHA256: 08498b939a9d0743268a74bd824d9cdae5d4557137eef693343e452156ecbfc4
-      run: |
-        $release = $env:RELEASE -eq 'true'
-        if (-not $env:GH_TOKEN) {
-          if ($release) { throw "HUB_RELEASE_TOKEN is not set: a release ships FusionFixHub.exe (readme, Release packages and secrets)" }
-          Write-Output "::warning::HUB_RELEASE_TOKEN is not set: the package is built without FusionFixHub.exe"
-          exit 0
-        }
-        gh release download --repo ThirteenAG/FusionFixHub-App --pattern FusionFixHub.exe --clobber
-        if ($LASTEXITCODE -ne 0) { throw "gh release download failed (an expired HUB_RELEASE_TOKEN, or no release with FusionFixHub.exe)" }
-        # The signature as the hub checks its own updates: the digest through WinVerifyTrust (the only chain error allowed
-        # is the self-signed root, CERT_E_UNTRUSTEDROOT; never unsigned, altered, revoked or expired), and the signer's
-        # public key must be the pinned one. Get-AuthenticodeSignature alone can't tell an untrusted root from other errors.
-        Add-Type -TypeDefinition @'
-        using System; using System.Runtime.InteropServices;
-        public static class HubTrust {
-            [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-            public struct FileInfo { public uint cbStruct; public string pcwszFilePath; public IntPtr hFile; public IntPtr pgKnownSubject; }
-            [StructLayout(LayoutKind.Sequential)]
-            public struct Data { public uint cbStruct; public IntPtr pPolicyCallbackData; public IntPtr pSIPClientData; public uint dwUIChoice; public uint fdwRevocationChecks; public uint dwUnionChoice; public IntPtr pFile; public uint dwStateAction; public IntPtr hWVTStateData; public IntPtr pwszURLReference; public uint dwProvFlags; public uint dwUIContext; public IntPtr pSignatureSettings; }
-            [DllImport("wintrust.dll")] static extern int WinVerifyTrust(IntPtr hwnd, ref Guid action, ref Data data);
-            public static int Verify(string path) {
-                var file = new FileInfo { cbStruct = (uint)Marshal.SizeOf(typeof(FileInfo)), pcwszFilePath = path };
-                var pFile = Marshal.AllocHGlobal(Marshal.SizeOf(typeof(FileInfo)));
-                Marshal.StructureToPtr(file, pFile, false);
-                var data = new Data { cbStruct = (uint)Marshal.SizeOf(typeof(Data)), dwUIChoice = 2, fdwRevocationChecks = 0, dwUnionChoice = 1, pFile = pFile, dwProvFlags = 0x40 };
-                var action = new Guid("00AAC56B-CD44-11d0-8CC2-00C04FC295EE");
-                int result = WinVerifyTrust(IntPtr.Zero, ref action, ref data);
-                Marshal.FreeHGlobal(pFile);
-                return result;
-            }
-        }
-        '@
-        $result = [HubTrust]::Verify((Resolve-Path FusionFixHub.exe).Path)
-        $untrustedRoot = -2146762487   # CERT_E_UNTRUSTEDROOT 0x800B0109: the certificate is self-signed
-        if ($result -ne 0 -and $result -ne $untrustedRoot) { throw ("FusionFixHub.exe's signature doesn't verify: 0x{0:X8}" -f $result) }
-        $sig = Get-AuthenticodeSignature FusionFixHub.exe
-        if (-not $sig.SignerCertificate) { throw "FusionFixHub.exe has no signer certificate" }
-        $spki = $sig.SignerCertificate.PublicKey.ExportSubjectPublicKeyInfo()
-        $key = ([System.Security.Cryptography.SHA256]::HashData($spki) | ForEach-Object { $_.ToString('x2') }) -join ''
-        if ($key -ne $env:HUB_SIGNER_SPKI_SHA256) { throw "FusionFixHub.exe is signed with another key ($key, subject '$($sig.SignerCertificate.Subject)'); the pinned key is $env:HUB_SIGNER_SPKI_SHA256" }
-        Write-Output ("FusionFixHub.exe: signature verified (0x{0:X8}), signer '{1}', pinned key matches" -f $result, $sig.SignerCertificate.Subject)
-
+    # Fork packages intentionally omit the private FusionFixHub download.
+    # release.bat supports this in CI without HUB_RELEASE_TOKEN.
     - name: Download Legacy Package
       uses: robinraju/release-downloader@v1.13
       with:
@@ -152,8 +104,8 @@ jobs:
       run: |
         ./release.bat
       env:
-        CODE_SIGNING_PFX: ${{ github.ref_name == 'master' && (github.event_name == 'push' || github.event.inputs.release == 'true') && secrets.CODE_SIGNING_PFX || '' }}
-        CODE_SIGNING_PASSWORD: ${{ github.ref_name == 'master' && (github.event_name == 'push' || github.event.inputs.release == 'true') && secrets.CODE_SIGNING_PASSWORD || '' }}
+        CODE_SIGNING_PFX: ${{ github.repository == 'MagicAl6244225/GTAIV.EFLC.FusionFix' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.release == 'true')) && secrets.CODE_SIGNING_PFX || '' }}
+        CODE_SIGNING_PASSWORD: ${{ github.repository == 'MagicAl6244225/GTAIV.EFLC.FusionFix' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.release == 'true')) && secrets.CODE_SIGNING_PASSWORD || '' }}
 
     - name: Pack Legacy
       shell: cmd
@@ -173,100 +125,115 @@ jobs:
       uses: actions/upload-artifact@v7
       with:
         archive: false
+        if-no-files-found: error
+        retention-days: 14
         path: GTAIV.EFLC.FusionFix.zip
 
     - name: Upload artifact (asi)
       uses: actions/upload-artifact@v7
       with:
         archive: false
+        if-no-files-found: error
+        retention-days: 14
         path: data/plugins/GTAIV.EFLC.FusionFix.asi
 
     - name: Upload Legacy Addon
       uses: actions/upload-artifact@v7
       with:
         archive: false
+        if-no-files-found: error
+        retention-days: 14
         path: GTAIV.EFLC.FusionFixLegacyAddon.zip
 
-    - name: Upload Release
-      if: |
-        github.event.inputs.release == 'true' &&
-        github.ref_name == 'master' &&
-        (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
-        github.repository == 'ThirteenAG/GTAIV.EFLC.FusionFix'
-      uses: ncipollo/release-action@main
-      with:
-        token: ${{ secrets.GITHUB_TOKEN }}
-        allowUpdates: false
-        name: GTAIV.EFLC.FusionFix v${{ steps.versioning.outputs.version }}
-        body: "[README](https://github.com/ThirteenAG/GTAIV.EFLC.FusionFix#readme)"
-        tag: v${{ steps.versioning.outputs.version }}
-        artifacts: GTAIV.EFLC.FusionFix.zip, GTAIV.EFLC.FusionFixLegacyAddon.zip
-        artifactErrorsFailBuild: true
+  publish:
+    needs: build
+    if: >-
+      github.repository == 'MagicAl6244225/GTAIV.EFLC.FusionFix' &&
+      github.ref == 'refs/heads/master' &&
+      (github.event_name == 'push' ||
+       (github.event_name == 'workflow_dispatch' && inputs.release == 'true'))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    # Serialize release mutations without cancelling an upload already in progress.
+    concurrency:
+      group: ${{ github.workflow }}-publish
+      cancel-in-progress: false
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RELEASE_VERSION: ${{ needs.build.outputs.version }}
 
-    # The settings description inside the shipped .asi, published to fusionfix.io (FusionFixHub-Site README,
-    # "Settings from CI"): GitHub Actions OIDC, no secret. Channel release on release runs (after Upload Release),
-    # dev on pushes to the default branch; a refused dev upload only warns.
-    - name: Publish the settings description to fusionfix.io
-      if: |
-        github.repository == 'ThirteenAG/GTAIV.EFLC.FusionFix' && github.ref_name == 'master' &&
-        (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
-      continue-on-error: ${{ github.event.inputs.release != 'true' }}
-      shell: python
-      env:
-        FIX: GTAIV.EFLC.FusionFix
-        ZIP: GTAIV.EFLC.FusionFix.zip
-        CHANNEL: ${{ github.event.inputs.release == 'true' && 'release' || 'dev' }}
-        TAG: ${{ github.event.inputs.release == 'true' && format('v{0}', steps.versioning.outputs.version) || '' }}
+    steps:
+    - name: Check development build is still current
+      id: current
+      if: github.event_name == 'push'
+      shell: bash
       run: |
-        import hashlib, json, os, subprocess, sys, urllib.request, zipfile
-        subprocess.run([sys.executable, "-m", "pip", "install", "--quiet", "pefile==2024.8.26"], check=True)
-        import pefile
+        head_sha=$(gh api "repos/$GH_REPO/git/ref/heads/master" --jq '.object.sha')
+        if [[ "$head_sha" == "$GITHUB_SHA" ]]; then
+          echo "publish=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "Skipping superseded development build $GITHUB_SHA; master is $head_sha."
+        fi
 
-        fix, zip_path, channel, tag = os.environ["FIX"], os.environ["ZIP"], os.environ["CHANNEL"], os.environ["TAG"]
-        data = open(zip_path, "rb").read()
-        with zipfile.ZipFile(zip_path) as z:
-            asi = next(n for n in z.namelist() if n.lower().endswith(f"/{fix.lower()}.asi") or n.lower() == f"{fix.lower()}.asi")
-            pe = pefile.PE(data=z.read(asi))
+    - name: Download build artifacts
+      if: github.event_name == 'workflow_dispatch' || steps.current.outputs.publish == 'true'
+      uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+      with:
+        pattern: GTAIV.EFLC.FusionFix*
+        merge-multiple: true
+        skip-decompress: true
+        path: release-assets
 
-        def resources(type_name):
-            out = {}
-            for t in pe.DIRECTORY_ENTRY_RESOURCE.entries:
-                if t.name is None or str(t.name) != type_name:
-                    continue
-                for n in t.directory.entries:
-                    for lang in n.directory.entries:
-                        s = lang.data.struct
-                        out[str(n.name) if n.name is not None else str(n.id)] = pe.get_data(s.OffsetToData, s.Size).decode("utf-8-sig")
-            return out
+    - name: Publish release
+      if: github.event_name == 'workflow_dispatch' || steps.current.outputs.publish == 'true'
+      shell: bash
+      run: |
+        assets=(
+          release-assets/GTAIV.EFLC.FusionFix.zip
+          release-assets/GTAIV.EFLC.FusionFix.asi
+          release-assets/GTAIV.EFLC.FusionFixLegacyAddon.zip
+        )
+        for asset in "${assets[@]}"; do
+          test -s "$asset"
+        done
 
-        def tag_case(name):   # rc.exe upper-cases resource names: EN -> en, PT-BR -> pt-BR
-            p = name.split("-")
-            return "-".join([p[0].lower()] + [x.upper() if len(x) == 2 else x.title() if len(x) == 4 else x for x in p[1:]])
+        cat > release-notes.md <<EOF
+        Build of the MagicAl6244225 fork.
+        Source commit: [$GITHUB_SHA]($GITHUB_SERVER_URL/$GH_REPO/commit/$GITHUB_SHA)
+        Build: $GITHUB_SERVER_URL/$GH_REPO/actions/runs/$GITHUB_RUN_ID
+        [README]($GITHUB_SERVER_URL/$GH_REPO#readme)
 
-        description = json.loads(next(iter(resources("ASISETTINGS").values())))
-        translations = {tag_case(k): json.loads(v) for k, v in resources("ASISETTINGS_TEXT").items()}
-        info = {}
-        for fi in getattr(pe, "FileInfo", []):
-            for entry in fi:
-                for st in getattr(entry, "StringTable", []):
-                    info.update({k.decode(): v.decode() for k, v in st.entries.items()})
+        This package does not include FusionFixHub, DXVK, or the retired installers.
+        EOF
 
-        body = {
-            "fix": fix, "channel": channel, "version": info.get("FileVersion", "").strip() or tag,
-            "buildTimeUtc": info.get("BuildTimeUtc") or sys.exit("no BuildTimeUtc in the plugin's version resource"), "sha": os.environ["GITHUB_SHA"],
-            "asset": {"name": os.path.basename(zip_path), "sha256": hashlib.sha256(data).hexdigest(), "size": len(data)},
-            "settings": {"format": 1, "description": description, "translations": translations},
-        }
-        if channel == "release":
-            body["tag"] = tag
+        if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
+          # Check again after downloading, before moving the rolling tag.
+          head_sha=$(gh api "repos/$GH_REPO/git/ref/heads/master" --jq '.object.sha')
+          if [[ "$head_sha" != "$GITHUB_SHA" ]]; then
+            echo "Skipping superseded development build $GITHUB_SHA."
+            exit 0
+          fi
 
-        req = urllib.request.Request(os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"] + "&audience=fusionfix.io",
-                                     headers={"Authorization": "bearer " + os.environ["ACTIONS_ID_TOKEN_REQUEST_TOKEN"]})
-        token = json.load(urllib.request.urlopen(req))["value"]
-        req = urllib.request.Request("https://fusionfix.io/api/publish/settings", data=json.dumps(body).encode(), method="POST",
-                                     headers={"Authorization": "Bearer " + token, "Content-Type": "application/json", "User-Agent": "FusionFix-CI"})
-        try:
-            print(urllib.request.urlopen(req).read().decode())
-        except urllib.error.HTTPError as e:
-            print(e.read().decode())
-            raise
+          tag=development
+          echo "This is a rolling development build; its assets are replaced on successful master pushes." >> release-notes.md
+          ref=$(gh api "repos/$GH_REPO/git/matching-refs/tags/$tag" --jq '.[] | select(.ref == "refs/tags/development") | .ref')
+          if [[ -n "$ref" ]]; then
+            gh api --method PATCH "repos/$GH_REPO/git/refs/tags/$tag" -f sha="$GITHUB_SHA" -F force=true
+          else
+            gh api --method POST "repos/$GH_REPO/git/refs" -f ref="refs/tags/$tag" -f sha="$GITHUB_SHA"
+          fi
+
+          release_id=$(gh api --paginate "repos/$GH_REPO/releases" --jq '.[] | select(.tag_name == "development") | .id')
+          if [[ -n "$release_id" ]]; then
+            gh release upload "$tag" "${assets[@]}" --clobber
+            gh release edit "$tag" --title "Development build (MagicAl6244225)" --notes-file release-notes.md --prerelease --latest=false
+          else
+            gh release create "$tag" "${assets[@]}" --verify-tag --title "Development build (MagicAl6244225)" --notes-file release-notes.md --prerelease --latest=false
+          fi
+        else
+          # Manual releases are immutable: creating an existing release fails.
+          [[ "$RELEASE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          gh release create "v$RELEASE_VERSION" "${assets[@]}" --target "$GITHUB_SHA" --title "GTAIV.EFLC.FusionFix v$RELEASE_VERSION (MagicAl6244225)" --notes-file release-notes.md --latest
+        fi
