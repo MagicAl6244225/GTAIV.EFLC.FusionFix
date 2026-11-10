@@ -1703,6 +1703,13 @@ export namespace rage
                 height /= 2;
             }
 
+            else if (std::string_view(name) == "_STENCIL_BUFFER_" && desc)
+            {
+                // The fourth G-buffer target: the stencil stays in r, the motion vectors of temporal AA go to g and b
+                desc->mFormat = GRCFMT_A16B16G16R16F;
+                bitsPerPixel = 64;
+            }
+
             auto ret = shCreateRT.stdcall<grcRenderTargetPC*>(name, a2, width, height, bitsPerPixel, desc);
 
             RTCache[name] = ret;
@@ -2216,12 +2223,18 @@ public:
         static FusionFix::Event<> BuildRenderListEvent;
         return BuildRenderListEvent;
     }
+    static FusionFix::Event<>& OnAfterBuildRenderList()
+    {
+        static FusionFix::Event<> AfterBuildRenderListEvent;
+        return AfterBuildRenderListEvent;
+    }
 
     static inline SafetyHookInline shBuildRenderList{};
     static void __fastcall BuildRenderList(CBaseDC* _this, void* edx)
     {
         OnBuildRenderList().executeAll();
         shBuildRenderList.fastcall<void*>(_this, edx);
+        OnAfterBuildRenderList().executeAll();
     }
 };
 
@@ -2875,12 +2888,12 @@ public:
         CTimer::m_systemTime = *pattern.get_first<float*>(4);
 
         pattern = hook::pattern("0F B6 0D ? ? ? ? 0F B6 C0 0B C1");
-        if (!pattern.empty())
+        if (!pattern.empty()) // 1.2.0.32, 1.2.0.43, 1.2.0.59
         {
             CTimer::ms_bUserPause = *pattern.get_first<bool*>(3);
             CTimer::ms_bScriptPause = *pattern.get_first<bool*>(15);
         }
-        else
+        else // 1.0.7.0, 1.0.8.0, 1.1.2.0, 1.1.3.0
         {
             pattern = hook::pattern("0F B6 0D ? ? ? ? 0F B6 15 ? ? ? ? 33 C0 0B C1");
             CTimer::ms_bUserPause = *pattern.get_first<bool*>(3);
@@ -2916,7 +2929,7 @@ public:
         CMenuManager::bLoadscreenShown = *pattern.get_first<uint8_t*>(2);
 
         pattern = hook::pattern("56 8B 35 ? ? ? ? 85 F6 75 06");
-        if (!pattern.empty())
+        if (!pattern.empty()) // 1.2.0.32, 1.2.0.43, 1.2.0.59
             getNativeAddress = pattern.count(2).get(1).get<void* (__stdcall)(uint32_t)>(0);
 
         pattern = find_pattern("8B 0D ? ? ? ? 53 56 33 F6", "53 56 8B 35 ? ? ? ? 33 D2");
@@ -2977,10 +2990,11 @@ public:
         pattern = find_pattern("8B 54 24 08 85 D2 74 62", "56 8B 74 24 0C 85 F6 74 62");
         rage::grmShaderInfo::shsub_436D70 = safetyhook::create_inline(pattern.get_first(0), rage::grmShaderInfo::setShaderParam);
 
-        pattern = find_pattern("F3 0F 11 44 24 ? E8 ? ? ? ? 83 C6 ? 3B F3");
-        if (!pattern.empty())
+        // Workaround for car reflections. 1.2.0.x: this loop sets its parameters through another function,
+        // which the hook above doesn't touch
+        pattern = hook::pattern("F3 0F 11 44 24 ? E8 ? ? ? ? 83 C6 ? 3B F3");
+        if (!pattern.empty()) // 1.0.7.0, 1.0.8.0, 1.1.2.0, 1.1.3.0
         {
-            // workaround for car reflections
             injector::MakeCALL(pattern.get_first(6), rage::grmShaderInfo::setShaderParamOriginal, true);
         }
 
@@ -3000,7 +3014,7 @@ public:
         CRenderPhaseDrawScene::shBuildRenderList = safetyhook::create_inline(pattern.get_first(0), CRenderPhaseDrawScene::BuildRenderList);
 
         pattern = hook::pattern("F3 0F 11 05 ? ? ? ? A3 ? ? ? ? A3 ? ? ? ? A3 ? ? ? ? F3 0F 11 0D");
-        if (pattern.empty())
+        if (pattern.empty()) // 1.2.0.32, 1.2.0.43, 1.2.0.59
             pattern = hook::pattern("F3 0F 11 05 ? ? ? ? E8 ? ? ? ? 84 C0 74 15 E8 ? ? ? ? 84 C0");
         CWeather::Rain = *pattern.get_first<float*>(4);
 
@@ -3034,20 +3048,22 @@ public:
         pattern = find_pattern("A3 ? ? ? ? C7 05 ? ? ? ? ? ? ? ? E8 ? ? ? ? A1", "A3 ? ? ? ? C7 05 ? ? ? ? ? ? ? ? E8 ? ? ? ? 8B 0D");
         RageDirect3DDevice9::m_pRealDevice = *pattern.get_first<IDirect3DDevice9**>(1);
 
-        pattern = find_pattern("A1 ? ? ? ? 83 F8 08 74 17", "A1 ? ? ? ? 83 F8 08 74 0C");
+        // CFrontEnd::CheckForBackInput, same in all versions. The menu API hooks the other reads of the menu screen
+        // that could be used here, possibly before this runs.
+        pattern = hook::pattern("A1 ? ? ? ? 83 F8 31 74 05 83 F8 3E 75 1A");
         pMenuTab = *pattern.get_first<int32_t*>(1);
 
         pattern = find_pattern("E8 ? ? ? ? 84 C0 75 44 38 05 ? ? ? ? 74 26", "E8 ? ? ? ? 84 C0 75 42 38 05");
         CCamera::isWidescreenBordersActive = (bool(*)())injector::GetBranchDestination(pattern.get_first(0)).get();
 
         pattern = hook::pattern("A3 ? ? ? ? 8B 44 24 ? A3 ? ? ? ? 8B 44 24 ? A3 ? ? ? ? A1");
-        if (!pattern.empty())
+        if (!pattern.empty()) // 1.2.0.32, 1.2.0.43, 1.2.0.59
         {
             CClock::ms_nGameClockHours = *pattern.get_first<uint8_t*>(1);
             CClock::ms_nGameClockMinutes = *pattern.get_first<uint8_t*>(10);
             CClock::ms_nGameClockSeconds = *pattern.get_first<uint16_t*>(19);
         }
-        else
+        else // 1.0.7.0, 1.0.8.0, 1.1.2.0, 1.1.3.0
         {
             pattern = hook::pattern("A3 ? ? ? ? 8B 44 24 ? 89 0D ? ? ? ? 8B 0D");
             CClock::ms_nGameClockHours = *pattern.get_first<uint8_t*>(11);
@@ -3092,12 +3108,12 @@ public:
         GTAIV_ENCRYPTION_KEY = reinterpret_cast<uint8_t(*)[32]>(*pattern.get_first<void*>(1));
 
         pattern = hook::pattern("E8 ? ? ? ? 85 C0 74 29 6A 00");
-        if (!pattern.empty())
+        if (!pattern.empty()) // 1.2.0.32, 1.2.0.43, 1.2.0.59
         {
             CPlayer::getLocalPlayerPed = (uintptr_t(*)())injector::GetBranchDestination(pattern.get_first(0)).as_int();
             CPlayer::findPlayerCar = (uintptr_t(*)())injector::GetBranchDestination(pattern.get_first(11)).as_int();
         }
-        else
+        else // 1.0.7.0, 1.0.8.0, 1.1.2.0, 1.1.3.0
         {
             pattern = hook::pattern("E8 ? ? ? ? 85 C0 74 2A 53 E8");
             CPlayer::getLocalPlayerPed = (uintptr_t(*)())injector::GetBranchDestination(pattern.get_first(0)).as_int();
@@ -3183,11 +3199,11 @@ public:
         CCamera::isScreenFadedOut = (decltype(CCamera::isScreenFadedOut))injector::GetBranchDestination(pattern.get_first()).as_int();
 
         pattern = hook::pattern("C7 05 ? ? ? ? ? ? ? ? 0F 85 ? ? ? ? 6A ? 6A");
-        if (!pattern.empty())
+        if (!pattern.empty()) // 1.2.0.32, 1.2.0.43, 1.2.0.59
         {
             CTreeImposters::ms_windAng = *pattern.get_first<float*>(2);
         }
-        else
+        else // 1.0.7.0, 1.0.8.0, 1.1.2.0, 1.1.3.0
         {
             pattern = hook::pattern("F3 0F 11 05 ? ? ? ? 0F 85");
             CTreeImposters::ms_windAng = *pattern.get_first<float*>(4);
@@ -3209,11 +3225,11 @@ public:
         CReplayMgr::dword_1037720 = *pattern.get_first<uint32_t*>(2);
 
         pattern = hook::pattern("A1 ? ? ? ? 66 0F 6E C0 F3 0F E6 C0 C1 E8 ? F2 0F 58 04 C5 ? ? ? ? 66 0F 5A C0 F3 0F 59 05 ? ? ? ? F3 0F 59 C1");
-        if (!pattern.empty())
+        if (!pattern.empty()) // 1.2.0.32, 1.2.0.43, 1.2.0.59
         {
             CReplayMgr::dword_11F704C = *pattern.get_first<uint32_t*>(1);
         }
-        else
+        else // 1.0.7.0, 1.0.8.0, 1.1.2.0, 1.1.3.0
         {
             pattern = hook::pattern("8B 0D ? ? ? ? DB 05 ? ? ? ? 85 C9 7D ? D8 05 ? ? ? ? D8 0D");
             CReplayMgr::dword_11F704C = *pattern.get_first<uint32_t*>(2);
