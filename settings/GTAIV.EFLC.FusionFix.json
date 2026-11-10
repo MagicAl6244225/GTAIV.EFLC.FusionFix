@@ -274,12 +274,6 @@
       "page": "controls", "group": "@group.gameplay", "control": [ "switch", "cycler" ]
     },
     {
-      "id": "MISC.PlayerJumpRagdollControl", "type": "choice", "default": 0,
-      "choices": [ { "value": 0, "label": "@MO_OFF" }, { "value": 1, "label": "@MO_ON" }, { "value": 2, "label": "@On + Climb" } ],
-      "label": "@Jump Ragdoll", "description": "@MISC.PlayerJumpRagdollControl.description",
-      "page": "controls", "control": [ "cycler", "dropdown" ]
-    },
-    {
       "id": "MISC.AutoClimbLadders", "type": "bool", "default": 0,
       "label": "@Ladders Climb", "description": "@MISC.AutoClimbLadders.description",
       "page": "controls", "group": "@group.gameplay", "control": [ "switch", "cycler" ]
@@ -536,6 +530,16 @@
       "id": "MISC.AutoClimbLaddersRange", "type": "float", "default": 1.5, "step": 0.1, "min": 0, "max": 4,
       "label": "@MISC.AutoClimbLaddersRange", "description": "@MISC.AutoClimbLaddersRange.description",
       "page": "advanced", "group": "@group.misc", "control": [ "slider" ], "visibility": "editor", "apply": "restart"
+    },
+    {
+      "id": "MISC.PlayerJumpRagdollControl", "type": "bool", "default": 0,
+      "label": "@MISC.PlayerJumpRagdollControl", "description": "@MISC.PlayerJumpRagdollControl.description",
+      "page": "advanced", "group": "@group.misc", "control": [ "switch", "cycler" ], "visibility": "editor", "apply": "restart"
+    },
+    {
+      "id": "MISC.PlayerClimbRagdollControl", "type": "bool", "default": 0,
+      "label": "@MISC.PlayerClimbRagdollControl", "description": "@MISC.PlayerClimbRagdollControl.description",
+      "page": "advanced", "group": "@group.misc", "control": [ "switch", "cycler" ], "visibility": "editor", "apply": "restart"
     },
     {
       "id": "MISC.SkipLoadingSpinner", "type": "bool", "default": 1,

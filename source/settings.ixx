@@ -2460,7 +2460,6 @@ public:
             { "PREF_STUNTJUMPCAM",           "MISC.StuntJumpCamera" },
             { "PREF_ACTIONCAM",              "MISC.ActionCamera" },
             { "PREF_CONFINECURSOR",          "MAIN.ConfineCursor" },
-            { "PREF_PLAYERJUMPRAGDOLL",      "MISC.PlayerJumpRagdollControl" },
         };
 
         for (auto& [name, id] : arr)
@@ -2549,7 +2548,6 @@ public:
             AddSetting(screen, "MISC.DisableWardrobeTransition", {}, NotTLAD);
             AddSetting(screen, "MISC.InstantStopTaxi");
             AddSetting(screen, "MISC.AutoClimbLadders");
-            AddSetting(screen, "MISC.PlayerJumpRagdollControl");
         }
 
         // Keyboard options: 21 steps of mouse sensitivity, the camera settings before Remap Keyboard

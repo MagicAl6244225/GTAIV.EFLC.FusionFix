@@ -15,8 +15,6 @@ import settings;
 
 namespace AirborneRagdoll
 {
-    constexpr auto JumpRagdollPreference = "PREF_PLAYERJUMPRAGDOLL";
-
     // Restore temporary native state when leaving a hook
     template <typename T>
     class ScopedValue
@@ -273,15 +271,8 @@ namespace AirborneRagdoll
             const armsWindmillAdaptive::Parameters& armsWindmillAdaptiveParameters,
             const pedalLegs::Parameters& pedalLegsParameters)
         {
-            if (!ped
-                || !ART::MessageParams::Constructor
-                || !ART::MessageParams::addBool
-                || !ART::MessageParams::addFloat
-                || !rage::fragInstNM::PostARTMessage
-                || !ART::MessageParams::Destructor)
-            {
+            if (!ped)
                 return;
-            }
 
             void* fragInstNM = *reinterpret_cast<void**>(ped + FragInstNMOffset);
             if (!fragInstNM)
@@ -943,7 +934,7 @@ namespace AirborneRagdoll
             return;
         }
 
-        const uintptr_t ped = CPlayer::getLocalPlayerPed ? CPlayer::getLocalPlayerPed() : 0;
+        const uintptr_t ped = CPlayer::getLocalPlayerPed();
         if (!ped)
         {
             ResetPlayerState();
@@ -1082,17 +1073,15 @@ public:
     {
         FusionFix::onInitEvent() += []()
         {
-            auto applyControl = [](int32_t value)
+            SettingsReader reader;
+            AirborneRagdoll::bPlayerJumpRagdollControl = reader.ReadInteger("MISC", "PlayerJumpRagdollControl", 0) != 0;
+            AirborneRagdoll::bPlayerClimbRagdollControl = reader.ReadInteger("MISC", "PlayerClimbRagdollControl", 0) != 0;
+
+            if (AirborneRagdoll::bPlayerJumpRagdollControl || AirborneRagdoll::bPlayerClimbRagdollControl)
             {
-                AirborneRagdoll::bPlayerJumpRagdollControl = value != 0;
-                AirborneRagdoll::bPlayerClimbRagdollControl = value == 2;
-            };
-            FusionFixSettings.SetCallback(AirborneRagdoll::JumpRagdollPreference, applyControl);
-            applyControl(FusionFixSettings.Get(AirborneRagdoll::JumpRagdollPreference));
-
-            AirborneRagdoll::Initialize();
-
-            FusionFix::onGameProcessEvent() += AirborneRagdoll::Process;
+                AirborneRagdoll::Initialize();
+                FusionFix::onGameProcessEvent() += AirborneRagdoll::Process;
+            }
         };
     }
 } PlayerJumpRagdollControl;
